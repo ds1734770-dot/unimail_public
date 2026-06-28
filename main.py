@@ -1,26 +1,26 @@
 """
-main.py — runs FastAPI web app and Telegram bot together.
-Also pings itself every 10 minutes to prevent Render free tier sleep.
+main.py — Fixed version for Render deployment.
+Runs FastAPI web app and Telegram bot in the same async event loop.
 """
-import asyncio, os, threading, uvicorn, requests, time
+import os, asyncio, uvicorn, requests, threading, time
 from dotenv import load_dotenv
 
 load_dotenv()
 
 def keep_alive():
-    """Ping the app every 10 minutes to prevent Render sleep."""
+    """Ping every 10 min to prevent Render free tier sleep."""
     url = os.getenv("BASE_URL", "http://localhost:8000")
-    time.sleep(60)  # wait 1 min for app to fully start first
+    time.sleep(90)
     while True:
         try:
             requests.get(url, timeout=10)
             print(f"✅ Keep-alive ping sent to {url}")
         except Exception as e:
-            print(f"⚠️ Keep-alive ping failed: {e}")
-        time.sleep(600)  # ping every 10 minutes
+            print(f"⚠️ Keep-alive failed: {e}")
+        time.sleep(600)
 
-def run_bot():
-    """Run Telegram bot in a separate thread."""
+async def run_bot_async():
+    """Run Telegram bot properly in async context."""
     from telegram.ext import ApplicationBuilder, CommandHandler
     from bot import cmd_start, cmd_connect, cmd_run, cmd_status, cmd_help
     from database import init_db
@@ -33,24 +33,40 @@ def run_bot():
     app.add_handler(CommandHandler("run",     cmd_run))
     app.add_handler(CommandHandler("status",  cmd_status))
     app.add_handler(CommandHandler("help",    cmd_help))
+
     print("🤖 Telegram bot started")
-    app.run_polling()
+    async with app:
+        await app.start()
+        await app.updater.start_polling()
+        # Keep bot running forever
+        while True:
+            await asyncio.sleep(3600)
 
-def run_webapp():
-    """Run FastAPI on the port Render assigns."""
+async def run_webapp_async():
+    """Run FastAPI using uvicorn programmatically."""
     port = int(os.getenv("PORT", 8000))
-    uvicorn.run("webapp:app", host="0.0.0.0", port=port, log_level="info")
+    config = uvicorn.Config(
+        "webapp:app",
+        host="0.0.0.0",
+        port=port,
+        log_level="info"
+    )
+    server = uvicorn.Server(config)
+    await server.serve()
 
-if __name__ == "__main__":
+async def main():
+    """Run both bot and web app concurrently in same event loop."""
     print("🚀 UniMail starting...")
 
-    # Start keep-alive in background
+    # Start keep-alive in background thread
     ka_thread = threading.Thread(target=keep_alive, daemon=True)
     ka_thread.start()
 
-    # Start bot in background
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
+    # Run bot and web app together
+    await asyncio.gather(
+        run_bot_async(),
+        run_webapp_async(),
+    )
 
-    # Run web app in main thread
-    run_webapp()
+if __name__ == "__main__":
+    asyncio.run(main())
